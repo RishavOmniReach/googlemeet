@@ -18,8 +18,8 @@ spring:
 
 google:
   oauth:
-    client-id: 803204819664-udgf72ti6vhkrf76sbcqsiq3dgbscsdg.apps.googleusercontent.com
-    client-secret: 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
+    client-id: YOUR CLIENT ID
+    client-secret: YOUR CLIENT SECRET
 #    scope: openid, profile, email, https://www.googleapis.com/auth/calendar.events
     redirect-uri : http://localhost:8080/api/master/google-meet/callback
     token-url: https://oauth2.googleapis.com/token
