@@ -3,17 +3,33 @@ server:
 
 spring:
   application:
-    name: googlemeet
-  security:
-    oauth2:
-      client:
-        registration:
-          google:
-            client-id: 803204819664-udgf72ti6vhkrf76sbcqsiq3dgbscsdg.apps.googleusercontent.com
-            client-secret: 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
-            scope: openid, profile, email, https://www.googleapis.com/auth/calendar.events
-        provider:
-          google:
-            authorization-uri: http://localhost:8080/login/oauth2/code/google
-#            token-uri: https://oauth2.googleapis.com/token
-#            user-info-uri: https://www.googleapis.com/oauth2/v3/userinfo
+    name: meet
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: your email
+    password: Your app password
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+google:
+  oauth:
+    client-id: 803204819664-udgf72ti6vhkrf76sbcqsiq3dgbscsdg.apps.googleusercontent.com
+    client-secret: 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
+#    scope: openid, profile, email, https://www.googleapis.com/auth/calendar.events
+    redirect-uri : http://localhost:8080/api/master/google-meet/callback
+    token-url: https://oauth2.googleapis.com/token
+    scopes:
+      - https://www.googleapis.com/auth/meetings.space.created
+      - https://www.googleapis.com/auth/meetings
+      - https://www.googleapis.com/auth/calendar
+      - https://www.googleapis.com/auth/userinfo.email
+      - openid
+      - profile
+      - email
+      - https://www.googleapis.com/auth/calendar.events
+
