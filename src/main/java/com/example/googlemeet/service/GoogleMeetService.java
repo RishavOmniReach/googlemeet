@@ -2,7 +2,14 @@ package com.example.googlemeet.service;
 import com.example.googlemeet.dto.MeetingRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
+import com.google.api.client.http.HttpTransport;
+import com.google.api.client.http.javanet.NetHttpTransport;
+import com.google.api.client.json.JsonFactory;
+import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.services.calendar.Calendar;
+import com.google.api.services.calendar.model.*;
 import com.google.apps.meet.v2.CreateSpaceRequest;
 import com.google.apps.meet.v2.Space;
 import com.google.apps.meet.v2.SpacesServiceClient;
@@ -16,12 +23,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.mail.javamail.JavaMailSender;
+
 
 import java.net.URI;
 import java.util.*;
@@ -45,8 +52,10 @@ public class GoogleMeetService {
 
     private final RestTemplate restTemplate;
     private final JavaMailSender mailSender;
-
     private final Map<String, String> tokenStorage = new HashMap<>();
+
+    private static final HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
+    private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
 
     /**
      * Exchanges an authorization code for an access token.
@@ -75,7 +84,7 @@ public class GoogleMeetService {
         }
     }
 
-        /**
+    /**
      * Generates the OAuth authorization URL.
      */
     public Map<String, String> getAuthDetails() throws Exception {
@@ -98,7 +107,7 @@ public class GoogleMeetService {
         return Map.of("authUrl", authorizationUrl);
     }
 
-        /**
+    /**
      * Exchanges the code for an access token and stores it.
      */
     public String storeAccessToken(String code) throws Exception {
@@ -107,11 +116,11 @@ public class GoogleMeetService {
         return accessToken;
     }
 
-    public String storeCode(String code) throws Exception
-    {
-        tokenStorage.put("code",code);
+    public String storeCode(String code) throws Exception {
+        tokenStorage.put("code", code);
         return code;
     }
+
     public String getCode() {
         return tokenStorage.get("code");
     }
@@ -136,13 +145,14 @@ public class GoogleMeetService {
     }
 
     /**
-     * Creates a Google Meet meeting and sends invitations to attendees.
+     * Creates a Google Meet meeting and sends Calendar invites.
      */
     public String createMeetingAndSendInvites(MeetingRequest meetingRequest) throws Exception {
-        String code=getCode();
+        String code = getCode();
         String accessToken = getValidAccessToken(code);
         if (StringUtils.isEmpty(accessToken)) {
-            throw new Exception("No valid access token found.");
+            log.info("Fetching new access token...");
+            accessToken = getAccessToken(code);
         }
 
         log.info("Using access token: {}", accessToken);
@@ -165,35 +175,56 @@ public class GoogleMeetService {
             }
 
             String meetingLink = space.getMeetingUri();
-            log.info("Successfully created meeting: {}", meetingLink);
+            sendCalendarInvites(meetingRequest, meetingLink, accessToken);
 
-            sendInvites(meetingRequest.getAttendees(), meetingLink);
             return meetingLink;
-        } catch (Exception e) {
+        }catch (Exception e) {
             log.error("Error creating Google Meet meeting.", e);
             throw new Exception("Error creating Google Meet meeting: " + e.getMessage());
         }
     }
 
     /**
-     * Sends email invitations to attendees.
+     * Sends Calendar invites instead of email.
      */
-    private void sendInvites(String[] attendees, String meetingLink) {
-        for (String attendee : attendees) {
-            try {
-                SimpleMailMessage message = new SimpleMailMessage();
-                message.setTo(attendee);
-                message.setSubject("Google Meet Invitation");
-                message.setText("You are invited to a Google Meet meeting. Click the link to join: " + meetingLink);
-                mailSender.send(message);
-                log.info("Sent invite to {}", attendee);
-            } catch (Exception e) {
-                log.error("Failed to send invite to {}", attendee, e);
-            }
+    private void sendCalendarInvites(MeetingRequest meetingRequest, String meetingLink, String accessToken) throws Exception {
+        GoogleCredential credential = new GoogleCredential().setAccessToken(accessToken);
+        Calendar service = new Calendar.Builder(HTTP_TRANSPORT, JSON_FACTORY, credential)
+                .setApplicationName("Google Meet Integration")
+                .build();
+
+        Event event = new Event()
+                .setSummary(meetingRequest.getDescription())
+                .setLocation(meetingLink)
+                .setDescription("Google Meet Meeting: " + meetingLink);
+        EventDateTime start = new EventDateTime().setDateTime(new com.google.api.client.util.DateTime(meetingRequest.getStartTime()));
+        EventDateTime end = new EventDateTime().setDateTime(new com.google.api.client.util.DateTime(meetingRequest.getEndTime()));
+        event.setStart(start);
+        event.setEnd(end);
+
+//       Add attendees
+        List<EventAttendee> eventAttendees = new ArrayList<>();
+        for (String attendee : meetingRequest.getAttendees()) {
+            eventAttendees.add(new EventAttendee().setEmail(attendee));
         }
+        event.setAttendees(eventAttendees);
+
+        // Set conference details
+        ConferenceSolutionKey conferenceSolutionKey = new ConferenceSolutionKey().setType("hangoutsMeet");
+        CreateConferenceRequest createConferenceRequest = new CreateConferenceRequest()
+                .setRequestId(UUID.randomUUID().toString())
+                .setConferenceSolutionKey(conferenceSolutionKey);
+        ConferenceData conferenceData = new ConferenceData().setCreateRequest(createConferenceRequest);
+        event.setConferenceData(conferenceData);
+
+        // Insert event into calendar
+        String calendarId = "primary"; // User's primary calendar
+        Event createdEvent = service.events().insert(calendarId, event)
+                .setConferenceDataVersion(1)
+                .setSendUpdates("all")
+                .execute();
+
+        log.info("Created Calendar Event: {}", createdEvent.getHtmlLink());
     }
+
 }
-
-
-
-

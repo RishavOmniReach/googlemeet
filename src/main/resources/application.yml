@@ -4,23 +4,11 @@ server:
 spring:
   application:
     name: meet
-  mail:
-    host: smtp.gmail.com
-    port: 587
-    username: your email
-    password: Your app password
-    properties:
-      mail:
-        smtp:
-          auth: true
-          starttls:
-            enable: true
 
 google:
   oauth:
-    client-id: YOUR CLIENT ID
-    client-secret: YOUR CLIENT SECRET
-#    scope: openid, profile, email, https://www.googleapis.com/auth/calendar.events
+    client-id:
+    client-secret:
     redirect-uri : http://localhost:8080/api/master/google-meet/callback
     token-url: https://oauth2.googleapis.com/token
     scopes:
