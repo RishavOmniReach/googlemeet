@@ -1,7 +1,10 @@
 package com.example.googlemeet.service;
 import com.example.googlemeet.dto.MeetingRequest;
+import com.example.googlemeet.dto.User;
+import com.example.googlemeet.repository.UserRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.api.Authentication;
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.javanet.NetHttpTransport;
@@ -53,6 +56,7 @@ public class GoogleMeetService {
     private final RestTemplate restTemplate;
     private final JavaMailSender mailSender;
     private final Map<String, String> tokenStorage = new HashMap<>();
+    private final UserRepository userRepository;
 
     private static final HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
@@ -60,7 +64,7 @@ public class GoogleMeetService {
     /**
      * Exchanges an authorization code for an access token.
      */
-    private String getAccessToken(String code) throws Exception {
+    public String storeAccessToken(String code) throws Exception {
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
         body.add("code", code);
         body.add("client_id", clientId);
@@ -72,11 +76,30 @@ public class GoogleMeetService {
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
         HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
-        ResponseEntity<String> response = restTemplate.postForEntity(tokenUrl, requestEntity, String.class);
+        ResponseEntity<Map> response = restTemplate.postForEntity(tokenUrl, requestEntity, Map.class);
 
         if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-            JsonNode jsonNode = new ObjectMapper().readTree(response.getBody());
-            String accessToken = jsonNode.path("access_token").asText();
+            String accessToken = (String) response.getBody().get("access_token");
+            String idToken = (String) response.getBody().get("id_token");
+
+            String userInfoUrl = "https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken;
+            ResponseEntity<Map> userInfoResponse = restTemplate.getForEntity(userInfoUrl, Map.class);
+            if (userInfoResponse.getStatusCode() == HttpStatus.OK) {
+                Map<String, Object> userInfo = userInfoResponse.getBody();
+                String email = (String) userInfo.get("email");
+                User user = userRepository.findByEmail(email);
+                if(user==null)
+                {
+                    user= new User(email,accessToken,new Date());
+                }else {
+                    user.setAccessToken(accessToken);
+                    user.setLastUpdated(new Date());
+                }
+                userRepository.save(user);
+            }
+        }
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            String accessToken =response.getBody().get("access_token").toString();
             tokenStorage.put("accessToken", accessToken);
             return accessToken;
         } else {
@@ -87,7 +110,7 @@ public class GoogleMeetService {
     /**
      * Generates the OAuth authorization URL.
      */
-    public Map<String, String> getAuthDetails() throws Exception {
+    public Map<Object, Object> getAuthDetails() throws Exception {
         UserAuthorizer authorizer = UserAuthorizer.newBuilder()
                 .setClientId(ClientId.newBuilder().setClientId(clientId).build())
                 .setCallbackUri(URI.create(redirectUri))
@@ -103,58 +126,25 @@ public class GoogleMeetService {
         String authorizationUrl = authorizer.getAuthorizationUrl("user", state, null).toString();
 
         log.info("Generated Auth URL: {}", authorizationUrl);
-
-        return Map.of("authUrl", authorizationUrl);
+        Map<Object,Object> res=new HashMap<>();
+        res.put("authUrl",authorizationUrl);
+        return res;
     }
 
-    /**
-     * Exchanges the code for an access token and stores it.
-     */
-    public String storeAccessToken(String code) throws Exception {
-        String accessToken = getAccessToken(code);
-        tokenStorage.put("accessToken", accessToken);
-        return accessToken;
-    }
-
-    public String storeCode(String code) throws Exception {
-        tokenStorage.put("code", code);
-        return code;
-    }
-
-    public String getCode() {
-        return tokenStorage.get("code");
-    }
-
-    /**
-     * Retrieves the stored access token.
-     */
-    public String getStoredAccessToken() {
-        return tokenStorage.get("accessToken");
-    }
-
-    /**
-     * Retrieves the stored access token or fetches a new one.
-     */
-    private String getValidAccessToken(String code) throws Exception {
-        String accessToken = tokenStorage.get("accessToken");
-        if (StringUtils.isEmpty(accessToken)) {
-            log.info("No stored access token, fetching new token...");
-            return getAccessToken(code);
-        }
-        return accessToken;
+    private boolean isTokenExpired(User user) {
+        return (new Date().getTime() - user.getLastUpdated().getTime()) > 3600 * 1000;
     }
 
     /**
      * Creates a Google Meet meeting and sends Calendar invites.
      */
     public String createMeetingAndSendInvites(MeetingRequest meetingRequest) throws Exception {
-        String code = getCode();
-        String accessToken = getValidAccessToken(code);
-        if (StringUtils.isEmpty(accessToken)) {
-            log.info("Fetching new access token...");
-            accessToken = getAccessToken(code);
+        User user = userRepository.findByEmail(meetingRequest.getOrganiser());
+        if ( user == null || isTokenExpired(user)) {
+            Map<Object,Object> authUrl=getAuthDetails();
+            throw new Exception(String.valueOf(authUrl.get("authUrl")));
         }
-
+        String accessToken=user.getAccessToken();
         log.info("Using access token: {}", accessToken);
 
         GoogleCredentials credentials = GoogleCredentials.create(new AccessToken(accessToken, null));
@@ -194,6 +184,7 @@ public class GoogleMeetService {
                 .build();
 
         Event event = new Event()
+                .setOrganizer(new Event.Organizer().setEmail(meetingRequest.getOrganiser()))
                 .setSummary(meetingRequest.getDescription())
                 .setLocation(meetingLink)
                 .setDescription("Google Meet Meeting: " + meetingLink);
@@ -226,5 +217,4 @@ public class GoogleMeetService {
 
         log.info("Created Calendar Event: {}", createdEvent.getHtmlLink());
     }
-
 }
