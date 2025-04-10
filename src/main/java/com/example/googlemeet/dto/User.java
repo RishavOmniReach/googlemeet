@@ -18,11 +18,13 @@ public class User{
     @NonNull
     private String email;
     private String accessToken;
+    private String refreshToken;
     private Date lastUpdated;
 
-    public User(String email, String accessToken, Date lastUpdated) {
+    public User(String email, String accessToken, String refreshToken,Date lastUpdated) {
         this.email = email;
         this.accessToken = accessToken;
+        this.refreshToken=refreshToken;
         this.lastUpdated = lastUpdated;
     }
 }

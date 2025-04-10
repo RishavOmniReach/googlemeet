@@ -2,9 +2,6 @@ package com.example.googlemeet.service;
 import com.example.googlemeet.dto.MeetingRequest;
 import com.example.googlemeet.dto.User;
 import com.example.googlemeet.repository.UserRepository;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.api.Authentication;
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.javanet.NetHttpTransport;
@@ -23,16 +20,12 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.UserAuthorizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.mail.javamail.JavaMailSender;
-
-
 import java.net.URI;
 import java.util.*;
 
@@ -54,17 +47,15 @@ public class GoogleMeetService {
     private String tokenUrl;
 
     private final RestTemplate restTemplate;
-    private final JavaMailSender mailSender;
     private final Map<String, String> tokenStorage = new HashMap<>();
     private final UserRepository userRepository;
-
     private static final HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
 
     /**
      * Exchanges an authorization code for an access token.
      */
-    public String storeAccessToken(String code) throws Exception {
+    public Map<String,String> storeAccessToken(String code) throws Exception {
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
         body.add("code", code);
         body.add("client_id", clientId);
@@ -77,35 +68,67 @@ public class GoogleMeetService {
 
         HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
         ResponseEntity<Map> response = restTemplate.postForEntity(tokenUrl, requestEntity, Map.class);
-
+        Map<String,String> resp=new HashMap<>();
         if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
             String accessToken = (String) response.getBody().get("access_token");
             String idToken = (String) response.getBody().get("id_token");
-
+            String refreshToken = (String) response.getBody().get("refresh_token");
             String userInfoUrl = "https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken;
             ResponseEntity<Map> userInfoResponse = restTemplate.getForEntity(userInfoUrl, Map.class);
             if (userInfoResponse.getStatusCode() == HttpStatus.OK) {
                 Map<String, Object> userInfo = userInfoResponse.getBody();
                 String email = (String) userInfo.get("email");
                 User user = userRepository.findByEmail(email);
-                if(user==null)
-                {
-                    user= new User(email,accessToken,new Date());
-                }else {
+                if (user == null) {
+                    user = new User(email, accessToken, refreshToken, new Date());
+                } else {
                     user.setAccessToken(accessToken);
+                    user.setRefreshToken(refreshToken); // update only if provided
                     user.setLastUpdated(new Date());
                 }
                 userRepository.save(user);
+                resp.put("accessToken",accessToken);
+                resp.put("email",email);
+                return resp;
             }
         }
-        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-            String accessToken =response.getBody().get("access_token").toString();
-            tokenStorage.put("accessToken", accessToken);
-            return accessToken;
-        } else {
+//        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+//            String accessToken =response.getBody().get("access_token").toString();
+//            tokenStorage.put("accessToken", accessToken);
+         else {
             throw new Exception("Failed to retrieve access token. Response: " + response.getBody());
         }
+        return resp;
     }
+
+    private String refreshAccessToken(User user) throws Exception {
+        if (user.getRefreshToken() == null) {
+            throw new Exception("Refresh token not available. Please re-authenticate.");
+        }
+
+        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+        body.add("client_id", clientId);
+        body.add("client_secret", clientSecret);
+        body.add("refresh_token", user.getRefreshToken());
+        body.add("grant_type", "refresh_token");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+
+        HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(tokenUrl, requestEntity, Map.class);
+
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            String newAccessToken = (String) response.getBody().get("access_token");
+            user.setAccessToken(newAccessToken);
+            user.setLastUpdated(new Date());
+            userRepository.save(user);
+            return newAccessToken;
+        } else {
+            throw new Exception("Failed to refresh access token. Response: " + response.getBody());
+        }
+    }
+
 
     /**
      * Generates the OAuth authorization URL.
@@ -140,11 +163,24 @@ public class GoogleMeetService {
      */
     public String createMeetingAndSendInvites(MeetingRequest meetingRequest) throws Exception {
         User user = userRepository.findByEmail(meetingRequest.getOrganiser());
-        if ( user == null || isTokenExpired(user)) {
-            Map<Object,Object> authUrl=getAuthDetails();
+
+        if (user == null) {
+            Map<Object, Object> authUrl = getAuthDetails();
             throw new Exception(String.valueOf(authUrl.get("authUrl")));
         }
-        String accessToken=user.getAccessToken();
+
+        if (isTokenExpired(user)) {
+            log.info("Access token expired, refreshing...");
+            try {
+                String newAccessToken = refreshAccessToken(user);
+                log.info("Refreshed access token: {}", newAccessToken);
+            } catch (Exception e) {
+                log.error("Refresh failed. User must re-authenticate.");
+                Map<Object, Object> authUrl = getAuthDetails();
+                throw new Exception(String.valueOf(authUrl.get("authUrl")));
+            }
+        }
+        String accessToken = user.getAccessToken();
         log.info("Using access token: {}", accessToken);
 
         GoogleCredentials credentials = GoogleCredentials.create(new AccessToken(accessToken, null));
